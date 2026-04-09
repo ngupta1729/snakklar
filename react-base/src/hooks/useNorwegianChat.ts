@@ -11,6 +11,7 @@ export function useNorwegianChat() {
   const [timedOut, setTimedOut] = useState(false);
 
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
 
   const resetTimer = useCallback(() => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -19,7 +20,7 @@ export function useNorwegianChat() {
   }, []);
 
   const startSession = useCallback(
-    (scenario: Scenario) => {
+    async (scenario: Scenario) => {
       setSelectedScenario(scenario);
       setTimedOut(false);
       setMessages([
@@ -31,6 +32,19 @@ export function useNorwegianChat() {
         },
       ]);
       resetTimer();
+
+      // Persist session to Supabase
+      const { data } = await supabase
+        .from('sessions')
+        .insert({
+          scenario_id: scenario.id,
+          scenario_label: scenario.label,
+          character_name: scenario.characterName,
+        })
+        .select('id')
+        .single();
+
+      sessionIdRef.current = data?.id ?? null;
     },
     [resetTimer],
   );
@@ -81,6 +95,23 @@ export function useNorwegianChat() {
             timestamp: Date.now(),
           }),
         );
+
+        // Persist both turns to Supabase
+        if (sessionIdRef.current) {
+          await supabase.from('messages').insert([
+            {
+              session_id: sessionIdRef.current,
+              role: 'user',
+              user_text: text.trim(),
+              feedback: data.feedback,
+            },
+            {
+              session_id: sessionIdRef.current,
+              role: 'assistant',
+              reply: data.conversation_reply,
+            },
+          ]);
+        }
       } catch (err) {
         console.error('sendMessage error:', err);
         setMessages((prev) =>
@@ -98,8 +129,18 @@ export function useNorwegianChat() {
     [selectedScenario, messages, resetTimer],
   );
 
-  const resetSession = useCallback(() => {
+  const resetSession = useCallback(async () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
+
+    // Mark session as ended
+    if (sessionIdRef.current) {
+      await supabase
+        .from('sessions')
+        .update({ ended_at: new Date().toISOString() })
+        .eq('id', sessionIdRef.current);
+      sessionIdRef.current = null;
+    }
+
     setMessages([]);
     setSelectedScenario(null);
     setTimedOut(false);
